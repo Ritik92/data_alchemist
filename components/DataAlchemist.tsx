@@ -21,7 +21,8 @@ import {
   ChevronRight,
   Download,
   Sliders,
-  Settings
+  Settings,
+  Lightbulb,
 } from 'lucide-react';
 import RulesBuilder from '@/components/RulesBuilder';
 import PrioritizationWeights from '@/components/PrioritizationWeight';
@@ -53,6 +54,14 @@ interface FixSuggestion {
     oldValue: any;
     newValue: any;
   };
+}
+
+interface RuleRecommendation {
+  type: string;
+  title: string;
+  description: string;
+  confidence: number;
+  ruleData: any;
 }
 
 type DataType = 'clients' | 'workers' | 'tasks';
@@ -91,13 +100,43 @@ const DataAlchemist: React.FC = () => {
   const [activeSection, setActiveSection] = useState<'data' | 'rules' | 'weights'>('data');
   const [rules, setRules] = useState<Rule[]>([]);
   const [weights, setWeights] = useState<Weights>(DEFAULT_WEIGHTS);
+  const [ruleErrors, setRuleErrors] = useState<ValidationError[]>([]);
+  
+  // AI Rule Recommendations (Milestone 3)
+  const [ruleRecommendations, setRuleRecommendations] = useState<RuleRecommendation[]>([]);
+  const [isGeneratingRecommendations, setIsGeneratingRecommendations] = useState(false);
 
   // Update validator data whenever data changes
   useEffect(() => {
     validator.setData('clients', data.clients);
     validator.setData('workers', data.workers);
     validator.setData('tasks', data.tasks);
+    validator.setRules(rules);
+    
+    // Generate AI rule recommendations when data changes
+    if (data.clients.length > 0 && data.workers.length > 0 && data.tasks.length > 0) {
+      generateRuleRecommendations();
+    }
   }, [data]);
+
+  // Validate rules whenever rules change
+  useEffect(() => {
+    validator.setRules(rules);
+    const ruleValidationErrors = validator.validateRules(rules);
+    setRuleErrors(ruleValidationErrors);
+  }, [rules]);
+
+  const generateRuleRecommendations = async () => {
+    setIsGeneratingRecommendations(true);
+    try {
+      const recommendations = await geminiService.generateRuleRecommendations(data);
+      setRuleRecommendations(recommendations);
+    } catch (error) {
+      console.error('Failed to generate rule recommendations:', error);
+    } finally {
+      setIsGeneratingRecommendations(false);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: DataType) => {
     const file = e.target.files?.[0];
@@ -236,8 +275,30 @@ const DataAlchemist: React.FC = () => {
     setSearchQuery('');
     setSearchResults({ clients: [], workers: [], tasks: [] });
   };
+
+  const applyRuleRecommendation = (recommendation: RuleRecommendation) => {
+    const newRule: Rule = {
+      id: `rule_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      name: recommendation.title,
+      enabled: true,
+      priority: rules.length + 1,
+      createdAt: new Date(),
+      ...recommendation.ruleData
+    };
+    setRules([...rules, newRule]);
+  };
+
+  const dismissRecommendation = (index: number) => {
+    setRuleRecommendations(prev => prev.filter((_, i) => i !== index));
+  };
   
   const handleExport = () => {
+    // Check for rule validation errors before export
+    if (ruleErrors.length > 0) {
+      alert('Please fix rule validation errors before exporting.');
+      return;
+    }
+
     // Export cleaned data as CSV
     const exportData = (type: DataType) => {
       const csvData = data[type];
@@ -284,7 +345,12 @@ const DataAlchemist: React.FC = () => {
       metadata: {
         exportedAt: new Date().toISOString(),
         version: '1.0.0',
-        totalRules: rules.filter(r => r.enabled).length
+        totalRules: rules.filter(r => r.enabled).length,
+        validationStatus: {
+          dataErrors: Object.values(errors).flat().filter(e => e.type === 'error').length,
+          dataWarnings: Object.values(errors).flat().filter(e => e.type === 'warning').length,
+          ruleErrors: ruleErrors.length
+        }
       }
     };
     
@@ -351,6 +417,18 @@ const DataAlchemist: React.FC = () => {
     };
   };
 
+  const getTotalValidationSummary = () => {
+    const allErrors = Object.values(errors).flat().filter(e => e.type === 'error').length;
+    const allWarnings = Object.values(errors).flat().filter(e => e.type === 'warning').length;
+    const ruleErrorCount = ruleErrors.filter(e => e.type === 'error').length;
+    
+    return {
+      totalErrors: allErrors + ruleErrorCount,
+      totalWarnings: allWarnings,
+      hasIssues: allErrors > 0 || allWarnings > 0 || ruleErrorCount > 0
+    };
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50/20 to-purple-50/20">
       <div className="container mx-auto px-6 py-8 max-w-7xl">
@@ -395,6 +473,9 @@ const DataAlchemist: React.FC = () => {
             {Object.values(data).some(d => d.length > 0) && (
               <CheckCircle2 className="w-4 h-4 text-green-500" />
             )}
+            {getTotalValidationSummary().hasIssues && (
+              <AlertCircle className="w-4 h-4 text-red-500" />
+            )}
           </button>
           
           <button
@@ -413,6 +494,9 @@ const DataAlchemist: React.FC = () => {
               <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">
                 {rules.filter(r => r.enabled).length}
               </span>
+            )}
+            {ruleErrors.length > 0 && (
+              <AlertCircle className="w-4 h-4 text-red-500" />
             )}
           </button>
           
@@ -440,6 +524,60 @@ const DataAlchemist: React.FC = () => {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
             >
+              {/* AI Rule Recommendations */}
+              {ruleRecommendations.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6 rounded-2xl bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200/30 p-6"
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    
+                    <h3 className="font-semibold text-gray-800">AI Rule Recommendations</h3>
+                    {isGeneratingRecommendations && (
+                      <Loader2 className="w-4 h-4 animate-spin text-purple-600" />
+                    )}
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {ruleRecommendations.slice(0, 3).map((rec, index) => (
+                      <motion.div 
+                        key={index}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.1 }}
+                        className="p-4 bg-white/70 rounded-xl border border-purple-200/30 flex items-start justify-between"
+                      >
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <Lightbulb className="w-4 h-4 text-yellow-500" />
+                            <h4 className="font-medium text-gray-800">{rec.title}</h4>
+                            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full">
+                              {Math.round(rec.confidence * 100)}% confidence
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-600">{rec.description}</p>
+                        </div>
+                        <div className="flex gap-2 ml-4">
+                          <button
+                            onClick={() => applyRuleRecommendation(rec)}
+                            className="px-3 py-1 bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-lg hover:from-purple-600 hover:to-blue-600 transition-all duration-200 text-xs font-medium"
+                          >
+                            Apply
+                          </button>
+                          <button
+                            onClick={() => dismissRecommendation(index)}
+                            className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+
               {/* File Upload Section */}
               <motion.div 
                 initial={{ opacity: 0, y: 20 }}
@@ -833,6 +971,27 @@ const DataAlchemist: React.FC = () => {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
             >
+              {/* Rule Validation Errors */}
+              {ruleErrors.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mb-6 rounded-2xl bg-red-50/70 backdrop-blur-sm border border-red-200/50 shadow-sm p-6"
+                >
+                  <div className="flex items-center gap-3 mb-4">
+                    <AlertCircle className="w-5 h-5 text-red-600" />
+                    <h3 className="font-semibold text-red-800">Rule Validation Issues</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {ruleErrors.map((err, idx) => (
+                      <div key={idx} className="p-3 bg-red-100/50 rounded-lg text-red-700 text-sm">
+                        {err.message}
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+              
               <RulesBuilder 
                 data={data}
                 rules={rules}

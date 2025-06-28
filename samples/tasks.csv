@@ -1,6 +1,4 @@
 TaskID,TaskName,Category,Duration,RequiredSkills,PreferredPhases,MaxConcurrent
-T1,Build Login Page,Development,2,"React,CSS","1-3",2
-T2,Database Setup,Development,1,"Python,SQL","[2]",1
-T3,API Integration,Development,3,"Python,JavaScript","2-4",2
-T4,User Interface Design,Design,2,"Figma,UI Design","[1,3]",1
-T5,Project Planning,Management,1,"Project Management","1-5",1
+T1,Data Processing,Analytics,2,Python,"1-3",1
+T2,Frontend Development,Development,1,JavaScript,"[3,4,5]",1
+T3,Backend API,Development,2,"Python,SQL","2-4",1

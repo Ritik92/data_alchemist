@@ -117,40 +117,9 @@ export const PRESET_PROFILES: WeightProfile[] = [
       skillMatching: 0.05,
       phaseBalance: 0.05
     }
-  },
-  {
-    id: 'skill-optimized',
-    name: 'Skill Optimized',
-    description: 'Matches workers to tasks based on skill compatibility',
-    weights: {
-      ...DEFAULT_WEIGHTS,
-      skillMatching: 0.4,
-      requestedTasksFulfillment: 0.2,
-      priorityLevel: 0.15,
-      workerUtilization: 0.15,
-      fairnessConstraints: 0.05,
-      phaseBalance: 0.05
-    }
   }
 ];
 
 export function generateRuleId(): string {
   return `rule_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-}
-
-export function exportRulesConfig(rules: Rule[], weights: PrioritizationWeights): string {
-  const config = {
-    rules: rules.filter(r => r.enabled).map(r => {
-      const { id, name, createdAt, ...ruleData } = r;
-      return ruleData;
-    }),
-    prioritization: weights,
-    metadata: {
-      exportedAt: new Date().toISOString(),
-      version: '1.0.0',
-      totalRules: rules.filter(r => r.enabled).length
-    }
-  };
-  
-  return JSON.stringify(config, null, 2);
 }

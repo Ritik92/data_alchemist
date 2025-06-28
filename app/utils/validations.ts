@@ -1,4 +1,6 @@
 // app/utils/validations.ts
+import { Rule, CoRunRule, PhaseWindowRule } from './rules';
+
 export interface ValidationError {
   type: 'error' | 'warning';
   message: string;
@@ -14,6 +16,7 @@ export class Validator {
   private clientData: DataRow[] = [];
   private workerData: DataRow[] = [];
   private taskData: DataRow[] = [];
+  private rules: Rule[] = [];
 
   setData(type: 'clients' | 'workers' | 'tasks', data: DataRow[]) {
     switch (type) {
@@ -27,6 +30,10 @@ export class Validator {
         this.taskData = data;
         break;
     }
+  }
+
+  setRules(rules: Rule[]) {
+    this.rules = rules;
   }
 
   validateData(type: 'clients' | 'workers' | 'tasks', data: DataRow[]): ValidationError[] {
@@ -48,6 +55,157 @@ export class Validator {
     this.validateCrossReferences(type, data, errors);
     
     return errors;
+  }
+
+  // NEW: Validate rules for circular dependencies and conflicts
+  validateRules(rules: Rule[]): ValidationError[] {
+    const errors: ValidationError[] = [];
+    
+    // Validation 7: Circular co-run groups
+    this.validateCircularCoRuns(rules, errors);
+    
+    // Validation 8: Conflicting rules vs phase-window constraints
+    this.validateRuleConflicts(rules, errors);
+    
+    return errors;
+  }
+
+  private validateCircularCoRuns(rules: Rule[], errors: ValidationError[]) {
+    const coRunRules = rules.filter(r => r.type === 'coRun' && r.enabled) as CoRunRule[];
+    if (coRunRules.length < 2) return;
+
+    // Build adjacency graph
+    const graph = new Map<string, Set<string>>();
+    
+    coRunRules.forEach(rule => {
+      rule.tasks.forEach(task => {
+        if (!graph.has(task)) {
+          graph.set(task, new Set());
+        }
+        // Add all other tasks in the same co-run group
+        rule.tasks.forEach(otherTask => {
+          if (task !== otherTask) {
+            graph.get(task)!.add(otherTask);
+          }
+        });
+      });
+    });
+
+    // Detect cycles using DFS
+    const visited = new Set<string>();
+    const recStack = new Set<string>();
+
+    const hasCycle = (node: string): boolean => {
+      if (recStack.has(node)) return true;
+      if (visited.has(node)) return false;
+
+      visited.add(node);
+      recStack.add(node);
+
+      const neighbors = graph.get(node) || new Set();
+      for (const neighbor of neighbors) {
+        if (hasCycle(neighbor)) return true;
+      }
+
+      recStack.delete(node);
+      return false;
+    };
+
+    for (const [node] of graph) {
+      if (!visited.has(node)) {
+        if (hasCycle(node)) {
+          errors.push({
+            type: 'error',
+            message: `Circular co-run groups detected involving task ${node}. This creates impossible scheduling constraints.`,
+            row: -1
+          });
+          break; // Only report one circular dependency
+        }
+      }
+    }
+  }
+
+  private validateRuleConflicts(rules: Rule[], errors: ValidationError[]) {
+    const coRunRules = rules.filter(r => r.type === 'coRun' && r.enabled) as CoRunRule[];
+    const phaseWindowRules = rules.filter(r => r.type === 'phaseWindow' && r.enabled) as PhaseWindowRule[];
+
+    // Check for conflicts between co-run and phase-window rules
+    coRunRules.forEach(coRunRule => {
+      const tasksInCoRun = coRunRule.tasks;
+      
+      // Find phase window constraints for tasks in this co-run group
+      const phaseConstraints = new Map<string, number[]>();
+      
+      tasksInCoRun.forEach(taskId => {
+        const phaseRule = phaseWindowRules.find(pr => pr.taskId === taskId);
+        if (phaseRule) {
+          phaseConstraints.set(taskId, phaseRule.allowedPhases);
+        } else {
+          // Get preferred phases from task data
+          const taskData = this.taskData.find(t => t.TaskID === taskId);
+          if (taskData && taskData.PreferredPhases) {
+            const phases = this.parsePhases(taskData.PreferredPhases);
+            if (phases.length > 0) {
+              phaseConstraints.set(taskId, phases);
+            }
+          }
+        }
+      });
+
+      // Check if there's any phase overlap for all tasks in co-run
+      if (phaseConstraints.size > 1) {
+        const phaseArrays = Array.from(phaseConstraints.values());
+        const commonPhases = phaseArrays.reduce((common, phases) => 
+          common.filter(phase => phases.includes(phase))
+        );
+
+        if (commonPhases.length === 0) {
+          const taskDetails = Array.from(phaseConstraints.entries())
+            .map(([task, phases]) => `${task} (phases: ${phases.join(',')})`)
+            .join(', ');
+          
+          errors.push({
+            type: 'error',
+            message: `Conflicting rules: Co-run rule "${coRunRule.name}" has no common phases available. Tasks: ${taskDetails}`,
+            row: -1
+          });
+        }
+      }
+    });
+  }
+
+  private parsePhases(phasesStr: string): number[] {
+    try {
+      const cleanStr = phasesStr.toString().trim();
+      
+      // Handle range format (e.g., "1-3")
+      if (cleanStr.includes('-') && !cleanStr.startsWith('[')) {
+        const [start, end] = cleanStr.split('-').map(n => parseInt(n.trim()));
+        if (!isNaN(start) && !isNaN(end) && start <= end) {
+          const phases = [];
+          for (let i = start; i <= end; i++) {
+            phases.push(i);
+          }
+          return phases;
+        }
+      } 
+      // Handle array format [1,2,3] or "1,2,3"
+      else {
+        let cleanedPhases = cleanStr;
+        if (cleanStr.startsWith('[') && cleanStr.endsWith(']')) {
+          cleanedPhases = cleanStr.slice(1, -1);
+        }
+        
+        if (cleanedPhases) {
+          return cleanedPhases.split(',')
+            .map(p => parseInt(p.trim()))
+            .filter(p => !isNaN(p));
+        }
+      }
+    } catch (e) {
+      // Return empty array for malformed phases
+    }
+    return [];
   }
 
   private validateRequiredColumns(type: string, data: DataRow[], errors: ValidationError[]) {
@@ -386,31 +544,7 @@ export class Validator {
       let phases: number[] = [];
       
       if (task.PreferredPhases) {
-        const phasesStr = task.PreferredPhases.toString().trim();
-        
-        try {
-          // Handle range format
-          if (phasesStr.includes('-') && !phasesStr.startsWith('[')) {
-            const [start, end] = phasesStr.split('-').map(n => parseInt(n.trim()));
-            if (!isNaN(start) && !isNaN(end)) {
-              for (let i = start; i <= end; i++) {
-                phases.push(i);
-              }
-            }
-          } 
-          // Handle array format
-          else {
-            let cleanedPhases = phasesStr;
-            if (phasesStr.startsWith('[') && phasesStr.endsWith(']')) {
-              cleanedPhases = phasesStr.slice(1, -1);
-            }
-            phases = cleanedPhases.split(',')
-              .map(p => parseInt(p.trim()))
-              .filter(p => !isNaN(p));
-          }
-        } catch (e) {
-          // Skip invalid phases
-        }
+        phases = this.parsePhases(task.PreferredPhases);
       }
       
       phases.forEach(phase => {

@@ -11,6 +11,14 @@ interface GeminiResponse {
   }[];
 }
 
+interface RuleRecommendation {
+  type: string;
+  title: string;
+  description: string;
+  confidence: number;
+  ruleData: any;
+}
+
 export class GeminiService {
   private apiKey: string;
   private baseUrl: string;
@@ -209,6 +217,119 @@ export class GeminiService {
     } catch (error) {
       console.error('Failed to parse natural language rule:', error);
       return null;
+    }
+  }
+
+  // AI Rule Recommendations (Milestone 3)
+  async generateRuleRecommendations(data: { clients: any[], workers: any[], tasks: any[] }): Promise<RuleRecommendation[]> {
+    if (data.clients.length === 0 || data.workers.length === 0 || data.tasks.length === 0) {
+      return [];
+    }
+
+    const dataAnalysis = {
+      totalClients: data.clients.length,
+      totalWorkers: data.workers.length,
+      totalTasks: data.tasks.length,
+      clientPriorities: data.clients.map(c => c.PriorityLevel).filter(p => typeof p === 'number'),
+      workerGroups: [...new Set(data.workers.map(w => w.WorkerGroup))].filter(Boolean),
+      clientGroups: [...new Set(data.clients.map(c => c.GroupTag))].filter(Boolean),
+      taskCategories: [...new Set(data.tasks.map(t => t.Category))].filter(Boolean),
+      workerSkills: [...new Set(data.workers.flatMap(w => 
+        w.Skills ? w.Skills.toString().split(',').map(s => s.trim()) : []
+      ))].filter(Boolean),
+      taskSkills: [...new Set(data.tasks.flatMap(t => 
+        t.RequiredSkills ? t.RequiredSkills.toString().split(',').map(s => s.trim()) : []
+      ))].filter(Boolean),
+      averageTaskDuration: data.tasks.reduce((sum, t) => sum + (parseInt(t.Duration) || 0), 0) / data.tasks.length,
+      // Sample task pairs for co-run analysis
+      sampleTaskPairs: data.tasks.slice(0, 6).map(t => t.TaskID).filter(Boolean)
+    };
+
+    const prompt = `
+    Analyze this resource allocation data and suggest intelligent business rules:
+    
+    Data Summary:
+    - ${dataAnalysis.totalClients} clients, ${dataAnalysis.totalWorkers} workers, ${dataAnalysis.totalTasks} tasks
+    - Worker groups: ${dataAnalysis.workerGroups.join(', ')}
+    - Client groups: ${dataAnalysis.clientGroups.join(', ')}
+    - Task categories: ${dataAnalysis.taskCategories.join(', ')}
+    - Common skills: ${dataAnalysis.workerSkills.slice(0, 10).join(', ')}
+    - Required skills: ${dataAnalysis.taskSkills.slice(0, 10).join(', ')}
+    - Average task duration: ${dataAnalysis.averageTaskDuration.toFixed(1)} phases
+    - Sample tasks: ${dataAnalysis.sampleTaskPairs.join(', ')}
+    
+    Client priority distribution: ${dataAnalysis.clientPriorities.join(', ')}
+    
+    Based on common resource allocation patterns, suggest up to 4 practical business rules:
+    
+    Rule types to consider:
+    1. Co-run rules for tasks that work well together (same skills, complementary work)
+    2. Load limits to prevent worker overload (especially for small teams)
+    3. Slot restrictions for groups that need coordination
+    4. Phase windows for time-sensitive or sequential tasks
+    
+    Return a JSON array of rule recommendations:
+    [
+      {
+        "type": "coRun|loadLimit|slotRestriction|phaseWindow",
+        "title": "Short descriptive title",
+        "description": "Why this rule makes business sense",
+        "confidence": 0.7-0.95,
+        "ruleData": {
+          // Rule-specific fields
+          // For coRun: {"type": "coRun", "tasks": ["T1", "T2"]}
+          // For loadLimit: {"type": "loadLimit", "workerGroup": "Development", "maxSlotsPerPhase": 2}
+          // For slotRestriction: {"type": "slotRestriction", "groupType": "client", "groupName": "Enterprise", "minCommonSlots": 3}
+          // For phaseWindow: {"type": "phaseWindow", "taskId": "T1", "allowedPhases": [1,2,3]}
+        }
+      }
+    ]
+    
+    Focus on:
+    - Realistic business scenarios (teams working together, preventing overload)
+    - Rules that would actually improve allocation efficiency
+    - High confidence recommendations based on data patterns
+    
+    Only return the JSON array, no other text.
+    `;
+
+    const response = await this.generateContent(prompt);
+    try {
+      const jsonMatch = response.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const recommendations: RuleRecommendation[] = JSON.parse(jsonMatch[0]);
+        
+        // Validate and filter recommendations
+        return recommendations.filter(rec => {
+          // Basic validation
+          if (!rec.type || !rec.title || !rec.description || !rec.ruleData) {
+            return false;
+          }
+          
+          // Confidence should be reasonable
+          if (rec.confidence < 0.5 || rec.confidence > 1) {
+            rec.confidence = Math.max(0.5, Math.min(1, rec.confidence || 0.7));
+          }
+          
+          // Validate rule data based on type
+          switch (rec.type) {
+            case 'coRun':
+              return rec.ruleData.tasks && Array.isArray(rec.ruleData.tasks) && rec.ruleData.tasks.length >= 2;
+            case 'loadLimit':
+              return rec.ruleData.workerGroup && typeof rec.ruleData.maxSlotsPerPhase === 'number';
+            case 'slotRestriction':
+              return rec.ruleData.groupName && rec.ruleData.groupType && typeof rec.ruleData.minCommonSlots === 'number';
+            case 'phaseWindow':
+              return rec.ruleData.taskId && Array.isArray(rec.ruleData.allowedPhases);
+            default:
+              return false;
+          }
+        }).slice(0, 4); // Limit to 4 recommendations
+      }
+      return [];
+    } catch (error) {
+      console.error('Failed to parse rule recommendations:', error);
+      return [];
     }
   }
 

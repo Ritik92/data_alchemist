@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { 
   Sliders, 
   BarChart3, 
@@ -9,9 +9,7 @@ import {
   Zap,
   Download,
   RefreshCw,
-  Info,
-  Check,
-  ChevronDown
+  Info
 } from 'lucide-react';
 import { 
   PrioritizationWeights, 
@@ -77,7 +75,6 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'sliders' | 'matrix' | 'ranking'>('sliders');
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
-  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const [criteriaRanking, setCriteriaRanking] = useState<string[]>([
     'priorityLevel',
     'requestedTasksFulfillment',
@@ -120,7 +117,6 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
       onWeightsChange(profile.weights);
       setSelectedProfile(profileId);
     }
-    setShowProfileDropdown(false);
   };
 
   const handleSliderChange = (key: keyof PrioritizationWeights, value: number) => {
@@ -139,7 +135,7 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
     }
     
     onWeightsChange(newWeights);
-    setSelectedProfile(null); // Clear selected profile when manually adjusting
+    setSelectedProfile(null);
   };
 
   const handleRankingChange = (dragIndex: number, dropIndex: number) => {
@@ -177,48 +173,18 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
         </div>
         
         <div className="flex items-center gap-3">
-          <div className="relative">
-            <button
-              onClick={() => setShowProfileDropdown(!showProfileDropdown)}
-              className="px-4 py-2 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-2 text-sm"
-            >
-              <Zap className="w-4 h-4 text-gray-600" />
-              <span>
-                {selectedProfile 
-                  ? PRESET_PROFILES.find(p => p.id === selectedProfile)?.name 
-                  : 'Select Profile'
-                }
-              </span>
-              <ChevronDown className="w-4 h-4 text-gray-400" />
-            </button>
-            
-            <AnimatePresence>
-              {showProfileDropdown && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden z-10"
-                >
-                  {PRESET_PROFILES.map(profile => (
-                    <button
-                      key={profile.id}
-                      onClick={() => handleProfileSelect(profile.id)}
-                      className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center justify-between group"
-                    >
-                      <div>
-                        <p className="text-sm font-medium text-gray-800">{profile.name}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">{profile.description}</p>
-                      </div>
-                      {selectedProfile === profile.id && (
-                        <Check className="w-4 h-4 text-blue-600" />
-                      )}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          <select
+            value={selectedProfile || ''}
+            onChange={(e) => e.target.value && handleProfileSelect(e.target.value)}
+            className="px-4 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">Select Profile...</option>
+            {PRESET_PROFILES.map(profile => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
           
           <button
             onClick={resetWeights}
@@ -290,50 +256,12 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
         {activeTab === 'matrix' && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600 mb-4">
-              Compare criteria pairwise. How much more important is the row criterion compared to the column?
+              Compare criteria pairwise. Coming soon...
             </p>
-            <div className="overflow-x-auto">
-              <table className="min-w-full">
-                <thead>
-                  <tr>
-                    <th className="px-3 py-2 text-xs font-medium text-gray-700 text-left">Criteria</th>
-                    {Object.keys(criteriaLabels).map(key => (
-                      <th key={key} className="px-3 py-2 text-xs font-medium text-gray-700 text-center">
-                        {criteriaLabels[key].split(' ')[0]}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(criteriaLabels).map(([rowKey, rowLabel]) => (
-                    <tr key={rowKey}>
-                      <td className="px-3 py-2 text-sm font-medium text-gray-700">
-                        {rowLabel}
-                      </td>
-                      {Object.keys(criteriaLabels).map(colKey => (
-                        <td key={colKey} className="px-3 py-2 text-center">
-                          {rowKey === colKey ? (
-                            <span className="text-gray-400">1</span>
-                          ) : (
-                            <input
-                              type="number"
-                              min="0.1"
-                              max="9"
-                              step="0.1"
-                              defaultValue="1"
-                              className="w-12 px-1 py-0.5 text-center text-sm border border-gray-200 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="text-center py-8 text-gray-400">
+              <Grid3x3 className="w-12 h-12 mx-auto mb-2" />
+              <p>Pairwise comparison matrix functionality will be available soon</p>
             </div>
-            <button className="mt-4 px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg hover:from-blue-600 hover:to-purple-700 transition-all duration-200 text-sm font-medium">
-              Calculate Weights
-            </button>
           </div>
         )}
 

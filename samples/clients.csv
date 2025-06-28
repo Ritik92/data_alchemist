@@ -1,6 +1,0 @@
-ClientID,ClientName,PriorityLevel,RequestedTaskIDs,GroupTag,AttributesJSON
-C1,Marketing Team,4,"T1,T2",marketing,"{""budget"":15000,""region"":""north""}"
-C2,Sales Team,5,"T3,T4",sales,"{""budget"":20000,""region"":""south""}"
-C3,Development Team,3,"T5",development,"{""budget"":12000,""region"":""east""}"
-C4,Design Team,2,"T1,T5",design,"{""budget"":8000,""region"":""west""}"
-C5,Operations Team,1,"T2,T3",operations,"{""budget"":10000,""region"":""central""}"
