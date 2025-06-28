@@ -19,6 +19,15 @@ interface RuleRecommendation {
   ruleData: any;
 }
 
+interface DataModification {
+  action: 'update' | 'bulk_update' | 'add' | 'delete';
+  entityType: 'clients' | 'workers' | 'tasks';
+  criteria?: any;
+  updates?: any;
+  newData?: any;
+  indices?: number[];
+}
+
 export class GeminiService {
   private apiKey: string;
   private baseUrl: string;
@@ -163,6 +172,189 @@ export class GeminiService {
       console.error('Failed to execute search:', error);
       return [];
     }
+  }
+
+  // Natural Language Data Modification (NEW)
+  async parseDataModification(query: string, data: { clients: any[], workers: any[], tasks: any[] }, activeTab: 'clients' | 'workers' | 'tasks'): Promise<DataModification | null> {
+    const contextByType = {
+      clients: `Client fields: ClientID, ClientName, PriorityLevel (1-5), RequestedTaskIDs (comma-separated), GroupTag, AttributesJSON`,
+      workers: `Worker fields: WorkerID, WorkerName, Skills (comma-separated), AvailableSlots (array like [1,2,3]), MaxLoadPerPhase, WorkerGroup, QualificationLevel`,
+      tasks: `Task fields: TaskID, TaskName, Category, Duration (number), RequiredSkills (comma-separated), PreferredPhases (range "1-3" or list [1,2,3]), MaxConcurrent`
+    };
+
+    const sampleData = data[activeTab].slice(0, 3).map(row => {
+      const summary: any = {};
+      Object.keys(row).forEach(key => {
+        if (row[key] !== null && row[key] !== undefined && row[key] !== '') {
+          summary[key] = row[key];
+        }
+      });
+      return summary;
+    });
+
+    const prompt = `
+    Convert this natural language data modification request into a structured operation:
+    "${query}"
+    
+    Currently viewing: ${activeTab} data
+    ${contextByType[activeTab]}
+    
+    Sample data:
+    ${JSON.stringify(sampleData, null, 2)}
+    
+    Available operations:
+    1. UPDATE: Modify specific field(s) for rows matching criteria
+       Example: "Set priority to 5 for all Enterprise clients"
+       Example: "Change duration to 3 for tasks T1, T2, and T3"
+       Example: "Add Python skill to all Development workers"
+    
+    2. BULK_UPDATE: Apply the same change to all rows
+       Example: "Increase all task durations by 1"
+       Example: "Set MaxLoadPerPhase to 2 for all workers"
+    
+    3. ADD: Add new rows
+       Example: "Add a new task called 'Code Review' with duration 2"
+    
+    4. DELETE: Remove rows matching criteria
+       Example: "Delete all tasks with duration greater than 5"
+    
+    Return a JSON object:
+    {
+      "action": "update|bulk_update|add|delete",
+      "entityType": "${activeTab}",
+      "criteria": {
+        // For UPDATE/DELETE: Filter criteria
+        // e.g., {"GroupTag": "Enterprise"} or {"TaskID": ["T1", "T2", "T3"]}
+        // For complex criteria, use special operators:
+        // {"Duration": {"$gt": 5}} for greater than
+        // {"Skills": {"$contains": "Python"}} for contains
+      },
+      "updates": {
+        // For UPDATE/BULK_UPDATE: Fields to update
+        // e.g., {"PriorityLevel": 5} or {"Duration": {"$increment": 1}}
+        // Special operations:
+        // {"$increment": 1} to increase by 1
+        // {"$append": "Python"} to add to comma-separated list
+        // {"$remove": "Java"} to remove from comma-separated list
+      },
+      "newData": {
+        // For ADD: Complete row data
+        // e.g., {"TaskID": "T99", "TaskName": "Code Review", "Duration": 2, ...}
+      }
+    }
+    
+    If the request is unclear or cannot be parsed, return null.
+    Only return the JSON object or null, no other text.
+    `;
+
+    const response = await this.generateContent(prompt);
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}|null/);
+      if (jsonMatch) {
+        const result = jsonMatch[0] === 'null' ? null : JSON.parse(jsonMatch[0]);
+        return result;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to parse data modification:', error);
+      return null;
+    }
+  }
+
+  // Apply data modifications
+  applyDataModification(modification: DataModification, data: any[]): { modifiedData: any[], affectedRows: number } {
+    let modifiedData = [...data];
+    let affectedRows = 0;
+
+    switch (modification.action) {
+      case 'update':
+        modifiedData = modifiedData.map((row, index) => {
+          if (this.matchesCriteria(row, modification.criteria)) {
+            affectedRows++;
+            return this.applyUpdates(row, modification.updates);
+          }
+          return row;
+        });
+        break;
+
+      case 'bulk_update':
+        modifiedData = modifiedData.map(row => {
+          affectedRows++;
+          return this.applyUpdates(row, modification.updates);
+        });
+        break;
+
+      case 'add':
+        if (modification.newData) {
+          modifiedData.push(modification.newData);
+          affectedRows = 1;
+        }
+        break;
+
+      case 'delete':
+        const originalLength = modifiedData.length;
+        modifiedData = modifiedData.filter(row => !this.matchesCriteria(row, modification.criteria));
+        affectedRows = originalLength - modifiedData.length;
+        break;
+    }
+
+    return { modifiedData, affectedRows };
+  }
+
+  private matchesCriteria(row: any, criteria: any): boolean {
+    if (!criteria) return true;
+
+    for (const [field, value] of Object.entries(criteria)) {
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        // Handle special operators
+        const operators = value as any;
+        if ('$gt' in operators && !(row[field] > operators.$gt)) return false;
+        if ('$lt' in operators && !(row[field] < operators.$lt)) return false;
+        if ('$gte' in operators && !(row[field] >= operators.$gte)) return false;
+        if ('$lte' in operators && !(row[field] <= operators.$lte)) return false;
+        if ('$contains' in operators) {
+          const fieldValue = String(row[field] || '').toLowerCase();
+          const searchValue = String(operators.$contains).toLowerCase();
+          if (!fieldValue.includes(searchValue)) return false;
+        }
+      } else if (Array.isArray(value)) {
+        // Handle array of values (OR condition)
+        if (!value.includes(row[field])) return false;
+      } else {
+        // Direct equality
+        if (row[field] !== value) return false;
+      }
+    }
+
+    return true;
+  }
+
+  private applyUpdates(row: any, updates: any): any {
+    const updatedRow = { ...row };
+
+    for (const [field, value] of Object.entries(updates)) {
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        // Handle special operations
+        const operation = value as any;
+        if ('$increment' in operation) {
+          updatedRow[field] = (parseInt(updatedRow[field]) || 0) + operation.$increment;
+        } else if ('$append' in operation) {
+          const currentValue = String(updatedRow[field] || '');
+          const newItem = String(operation.$append);
+          updatedRow[field] = currentValue ? `${currentValue},${newItem}` : newItem;
+        } else if ('$remove' in operation) {
+          const currentValue = String(updatedRow[field] || '');
+          const itemToRemove = String(operation.$remove).toLowerCase();
+          const items = currentValue.split(',').map(s => s.trim());
+          updatedRow[field] = items.filter(item => item.toLowerCase() !== itemToRemove).join(',');
+        }
+      } else {
+        // Direct assignment
+        updatedRow[field] = value;
+      }
+    }
+
+    return updatedRow;
   }
 
   // Parse natural language rule request

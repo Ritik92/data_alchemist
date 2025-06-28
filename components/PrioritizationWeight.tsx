@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Sliders, 
@@ -9,7 +9,9 @@ import {
   Zap,
   Download,
   RefreshCw,
-  Info
+  Info,
+  AlertCircle,
+  Check
 } from 'lucide-react';
 import { 
   PrioritizationWeights, 
@@ -31,6 +33,23 @@ interface WeightSliderProps {
   description?: string;
   color: string;
 }
+
+interface ComparisonValue {
+  value: number;
+  description: string;
+}
+
+const COMPARISON_SCALE: ComparisonValue[] = [
+  { value: 1/9, description: 'Extremely less important' },
+  { value: 1/7, description: 'Much less important' },
+  { value: 1/5, description: 'Moderately less important' },
+  { value: 1/3, description: 'Slightly less important' },
+  { value: 1, description: 'Equal importance' },
+  { value: 3, description: 'Slightly more important' },
+  { value: 5, description: 'Moderately more important' },
+  { value: 7, description: 'Much more important' },
+  { value: 9, description: 'Extremely more important' }
+];
 
 const WeightSlider: React.FC<WeightSliderProps> = ({ label, value, onChange, description, color }) => {
   const percentage = Math.round(value * 100);
@@ -84,6 +103,11 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
     'phaseBalance'
   ]);
 
+  // AHP Comparison Matrix state
+  const [comparisonMatrix, setComparisonMatrix] = useState<number[][]>([]);
+  const [consistencyRatio, setConsistencyRatio] = useState<number>(0);
+  const [isConsistent, setIsConsistent] = useState<boolean>(true);
+
   const criteriaLabels: Record<string, string> = {
     priorityLevel: 'Priority Level',
     requestedTasksFulfillment: 'Task Fulfillment',
@@ -109,6 +133,109 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
     workerUtilization: 'bg-gradient-to-r from-purple-500 to-purple-600',
     skillMatching: 'bg-gradient-to-r from-orange-500 to-orange-600',
     phaseBalance: 'bg-gradient-to-r from-pink-500 to-pink-600'
+  };
+
+  const criteriaKeys = Object.keys(criteriaLabels) as (keyof PrioritizationWeights)[];
+
+  // Initialize comparison matrix
+  useEffect(() => {
+    const n = criteriaKeys.length;
+    const matrix = Array(n).fill(null).map(() => Array(n).fill(1));
+    
+    // Try to derive initial matrix from current weights
+    const weightArray = criteriaKeys.map(k => weights[k] as number);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        if (i !== j && weightArray[i] > 0 && weightArray[j] > 0) {
+          matrix[i][j] = Math.min(9, Math.max(1/9, weightArray[i] / weightArray[j]));
+        }
+      }
+    }
+    
+    setComparisonMatrix(matrix);
+  }, []);
+
+  // Calculate weights from comparison matrix using AHP
+  const calculateAHPWeights = (matrix: number[][]) => {
+    const n = matrix.length;
+    if (n === 0) return;
+
+    // Normalize the matrix columns
+    const columnSums = Array(n).fill(0);
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        columnSums[j] += matrix[i][j];
+      }
+    }
+
+    const normalizedMatrix = matrix.map((row, i) => 
+      row.map((value, j) => value / columnSums[j])
+    );
+
+    // Calculate priority vector (average of normalized rows)
+    const priorityVector = normalizedMatrix.map(row => 
+      row.reduce((sum, val) => sum + val, 0) / n
+    );
+
+    // Calculate consistency
+    const weightedSum = Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        weightedSum[i] += matrix[i][j] * priorityVector[j];
+      }
+    }
+
+    const lambda = weightedSum.map((ws, i) => 
+      priorityVector[i] > 0 ? ws / priorityVector[i] : 0
+    );
+    const lambdaMax = lambda.reduce((sum, val) => sum + val, 0) / n;
+    
+    // Consistency Index (CI) and Consistency Ratio (CR)
+    const CI = (lambdaMax - n) / (n - 1);
+    const RI = [0, 0, 0.58, 0.90, 1.12, 1.24, 1.32, 1.41, 1.45][n] || 1.45; // Random Index
+    const CR = CI / RI;
+
+    setConsistencyRatio(CR);
+    setIsConsistent(CR < 0.1); // Generally accepted threshold
+
+    // Update weights
+    const newWeights = { ...weights };
+    criteriaKeys.forEach((key, i) => {
+      (newWeights[key] as number) = priorityVector[i];
+    });
+    
+    onWeightsChange(newWeights);
+    setSelectedProfile(null);
+  };
+
+  const handleComparisonChange = (i: number, j: number, value: number) => {
+    const newMatrix = comparisonMatrix.map(row => [...row]);
+    newMatrix[i][j] = value;
+    newMatrix[j][i] = 1 / value; // Reciprocal for consistency
+    setComparisonMatrix(newMatrix);
+    calculateAHPWeights(newMatrix);
+  };
+
+  const getComparisonValue = (i: number, j: number): number => {
+    if (comparisonMatrix.length > i && comparisonMatrix[i].length > j) {
+      return comparisonMatrix[i][j];
+    }
+    return 1;
+  };
+
+  const getComparisonDescription = (value: number): string => {
+    const closest = COMPARISON_SCALE.reduce((prev, curr) => 
+      Math.abs(curr.value - value) < Math.abs(prev.value - value) ? curr : prev
+    );
+    return closest.description;
+  };
+
+  const formatComparisonValue = (value: number): string => {
+    if (value < 1) {
+      const reciprocal = 1 / value;
+      return `1/${Math.round(reciprocal)}`;
+    }
+    return Math.round(value).toString();
   };
 
   const handleProfileSelect = (profileId: string) => {
@@ -159,6 +286,14 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
   const resetWeights = () => {
     onWeightsChange(DEFAULT_WEIGHTS);
     setSelectedProfile(null);
+  };
+
+  const resetComparisonMatrix = () => {
+    const n = criteriaKeys.length;
+    const matrix = Array(n).fill(null).map(() => Array(n).fill(1));
+    setComparisonMatrix(matrix);
+    setConsistencyRatio(0);
+    setIsConsistent(true);
   };
 
   return (
@@ -254,13 +389,124 @@ const PrioritizationWeights: React.FC<PrioritizationWeightsProps> = ({
         )}
 
         {activeTab === 'matrix' && (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600 mb-4">
-              Compare criteria pairwise. Coming soon...
-            </p>
-            <div className="text-center py-8 text-gray-400">
-              <Grid3x3 className="w-12 h-12 mx-auto mb-2" />
-              <p>Pairwise comparison matrix functionality will be available soon</p>
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Compare each criterion with every other criterion. Use the scale to indicate how much more important one is compared to the other.
+                  </p>
+                  <div className="flex flex-wrap gap-4 text-xs text-gray-500 mb-4">
+                    <span>1 = Equal</span>
+                    <span>3 = Slightly more</span>
+                    <span>5 = Moderately more</span>
+                    <span>7 = Much more</span>
+                    <span>9 = Extremely more</span>
+                  </div>
+                </div>
+                <button
+                  onClick={resetComparisonMatrix}
+                  className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  Reset Matrix
+                </button>
+              </div>
+
+              {/* Consistency Indicator */}
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className={`p-4 rounded-xl border ${
+                  isConsistent 
+                    ? 'bg-green-50 border-green-200' 
+                    : 'bg-amber-50 border-amber-200'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  {isConsistent ? (
+                    <Check className="w-5 h-5 text-green-600" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-amber-600" />
+                  )}
+                  <div>
+                    <p className="font-medium text-sm">
+                      Consistency Ratio: {(consistencyRatio * 100).toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      {isConsistent 
+                        ? 'Your comparisons are consistent' 
+                        : 'Consider reviewing your comparisons for better consistency (CR should be < 10%)'
+                      }
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Comparison Matrix */}
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      <th className="p-2 text-xs font-medium text-gray-600"></th>
+                      {criteriaKeys.map(key => (
+                        <th key={key} className="p-2 text-xs font-medium text-gray-700 text-center">
+                          <div className="writing-mode-vertical-lr transform rotate-180">
+                            {criteriaLabels[key]}
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {criteriaKeys.map((rowKey, i) => (
+                      <tr key={rowKey}>
+                        <td className="p-2 text-sm font-medium text-gray-700 whitespace-nowrap">
+                          {criteriaLabels[rowKey]}
+                        </td>
+                        {criteriaKeys.map((colKey, j) => (
+                          <td key={colKey} className="p-1">
+                            {i === j ? (
+                              <div className="w-20 h-10 bg-gray-100 rounded flex items-center justify-center">
+                                <span className="text-sm text-gray-500">1</span>
+                              </div>
+                            ) : i < j ? (
+                              <div className="relative group">
+                                <select
+                                  value={getComparisonValue(i, j)}
+                                  onChange={(e) => handleComparisonChange(i, j, parseFloat(e.target.value))}
+                                  className="w-20 h-10 px-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 appearance-none text-center cursor-pointer"
+                                >
+                                  {COMPARISON_SCALE.map(comp => (
+                                    <option key={comp.value} value={comp.value}>
+                                      {formatComparisonValue(comp.value)}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="absolute invisible group-hover:visible z-10 bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-xs rounded whitespace-nowrap">
+                                  {getComparisonDescription(getComparisonValue(i, j))}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="w-20 h-10 bg-gray-50 rounded flex items-center justify-center">
+                                <span className="text-sm text-gray-400">
+                                  {formatComparisonValue(getComparisonValue(i, j))}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <style jsx>{`
+                .writing-mode-vertical-lr {
+                  writing-mode: vertical-lr;
+                  text-orientation: mixed;
+                }
+              `}</style>
             </div>
           </div>
         )}

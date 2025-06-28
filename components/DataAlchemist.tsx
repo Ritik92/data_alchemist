@@ -23,6 +23,9 @@ import {
   Sliders,
   Settings,
   Lightbulb,
+  Edit3,
+  Check,
+  XCircle,
 } from 'lucide-react';
 import RulesBuilder from '@/components/RulesBuilder';
 import PrioritizationWeights from '@/components/PrioritizationWeight';
@@ -64,6 +67,14 @@ interface RuleRecommendation {
   ruleData: any;
 }
 
+interface ModificationPreview {
+  action: string;
+  entityType: string;
+  affectedRows: number;
+  description: string;
+  changes?: any[];
+}
+
 type DataType = 'clients' | 'workers' | 'tasks';
 
 const DataAlchemist: React.FC = () => {
@@ -95,6 +106,12 @@ const DataAlchemist: React.FC = () => {
   });
   const [uploadingType, setUploadingType] = useState<DataType | null>(null);
   const [isGeneratingFixes, setIsGeneratingFixes] = useState(false);
+  
+  // Natural Language Data Modification states
+  const [modificationQuery, setModificationQuery] = useState('');
+  const [isProcessingModification, setIsProcessingModification] = useState(false);
+  const [modificationPreview, setModificationPreview] = useState<ModificationPreview | null>(null);
+  const [pendingModification, setPendingModification] = useState<any>(null);
   
   // Milestone 2 state
   const [activeSection, setActiveSection] = useState<'data' | 'rules' | 'weights'>('data');
@@ -262,6 +279,85 @@ const DataAlchemist: React.FC = () => {
     } finally {
       setIsSearching(false);
     }
+  };
+
+  const handleDataModification = async () => {
+    if (!modificationQuery.trim()) return;
+    
+    setIsProcessingModification(true);
+    setModificationPreview(null);
+    setPendingModification(null);
+    
+    try {
+      const modification = await geminiService.parseDataModification(modificationQuery, data, activeTab);
+      
+      if (modification) {
+        // Get preview of changes
+        const { modifiedData, affectedRows } = geminiService.applyDataModification(modification, data[activeTab]);
+        
+        let description = '';
+        switch (modification.action) {
+          case 'update':
+            description = `Update ${affectedRows} ${activeTab} matching criteria`;
+            break;
+          case 'bulk_update':
+            description = `Update all ${affectedRows} ${activeTab}`;
+            break;
+          case 'add':
+            description = `Add ${affectedRows} new ${activeTab.slice(0, -1)}`;
+            break;
+          case 'delete':
+            description = `Delete ${affectedRows} ${activeTab}`;
+            break;
+        }
+        
+        // Show preview
+        setModificationPreview({
+          action: modification.action,
+          entityType: modification.entityType,
+          affectedRows,
+          description,
+          changes: modification.action === 'update' || modification.action === 'bulk_update' 
+            ? modifiedData.filter((_, index) => data[activeTab][index] !== modifiedData[index]).slice(0, 5)
+            : modification.action === 'add' ? [modification.newData] : []
+        });
+        
+        setPendingModification({ modification, modifiedData });
+      } else {
+        alert('Could not understand the modification request. Please try rephrasing.');
+      }
+    } catch (error) {
+      console.error('Error processing modification:', error);
+      alert('Failed to process modification request.');
+    } finally {
+      setIsProcessingModification(false);
+    }
+  };
+
+  const applyModification = async () => {
+    if (!pendingModification) return;
+    
+    const { modification, modifiedData } = pendingModification;
+    
+    // Apply the modification
+    setData(prev => ({
+      ...prev,
+      [activeTab]: modifiedData
+    }));
+    
+    // Re-run validation
+    await runValidation(activeTab, modifiedData);
+    
+    // Clear modification state
+    setModificationQuery('');
+    setModificationPreview(null);
+    setPendingModification(null);
+  };
+
+  const cancelModification = () => {
+    setModificationQuery('');
+    setModificationPreview(null);
+    setPendingModification(null);
   };
 
   const applyFix = (suggestion: FixSuggestion) => {
@@ -700,6 +796,113 @@ const DataAlchemist: React.FC = () => {
                       <span className="text-blue-700 font-medium">
                         Found {searchResults[activeTab].length} matching records
                       </span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+
+              {/* Natural Language Data Modification (NEW) */}
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25 }}
+                className="mb-6 rounded-2xl bg-white/70 backdrop-blur-sm border border-gray-200/50 shadow-sm p-6"
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="p-2 bg-gradient-to-br from-purple-500/10 to-pink-500/10 rounded-xl">
+                    <Edit3 className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <h3 className="font-semibold text-gray-800">Natural Language Data Modification</h3>
+                </div>
+                
+                <div className="flex gap-3">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={modificationQuery}
+                      onChange={(e) => setModificationQuery(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleDataModification()}
+                      placeholder='Try: "Set priority to 5 for Enterprise clients" or "Increase all task durations by 1"'
+                      className="w-full px-4 py-3 pr-10 border border-gray-200/50 rounded-xl bg-white/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all duration-200 text-sm"
+                      disabled={isProcessingModification || data[activeTab].length === 0}
+                    />
+                    {modificationQuery && (
+                      <button
+                        onClick={() => setModificationQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleDataModification}
+                    disabled={isProcessingModification || !modificationQuery.trim() || data[activeTab].length === 0}
+                    className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-600 text-white rounded-xl hover:from-purple-600 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 shadow-sm hover:shadow-md flex items-center gap-2"
+                  >
+                    {isProcessingModification ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span className="text-sm font-medium">Processing...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        <span className="text-sm font-medium">Modify</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                
+                {/* Modification Preview */}
+                <AnimatePresence>
+                  {modificationPreview && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="mt-4 p-4 bg-purple-50 border border-purple-200 rounded-xl"
+                    >
+                      <div className="flex items-start justify-between mb-3">
+                        <div>
+                          <h4 className="font-medium text-gray-800">Preview Changes</h4>
+                          <p className="text-sm text-gray-600 mt-1">{modificationPreview.description}</p>
+                        </div>
+                        <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+                          {modificationPreview.affectedRows} rows affected
+                        </span>
+                      </div>
+                      
+                      {modificationPreview.changes && modificationPreview.changes.length > 0 && (
+                        <div className="mb-4 space-y-2">
+                          <p className="text-xs text-gray-600 font-medium">Sample changes:</p>
+                          {modificationPreview.changes.slice(0, 3).map((change, idx) => (
+                            <div key={idx} className="p-2 bg-white rounded-lg text-xs">
+                              <pre className="whitespace-pre-wrap">{JSON.stringify(change, null, 2)}</pre>
+                            </div>
+                          ))}
+                          {modificationPreview.changes.length > 3 && (
+                            <p className="text-xs text-gray-500 italic">...and {modificationPreview.changes.length - 3} more</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      <div className="flex gap-3 justify-end">
+                        <button
+                          onClick={cancelModification}
+                          className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors flex items-center gap-2"
+                        >
+                          <XCircle className="w-4 h-4" />
+                          <span className="text-sm">Cancel</span>
+                        </button>
+                        <button
+                          onClick={applyModification}
+                          className="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:from-green-600 hover:to-emerald-700 transition-all duration-200 shadow-sm hover:shadow-md flex items-center gap-2"
+                        >
+                          <Check className="w-4 h-4" />
+                          <span className="text-sm font-medium">Apply Changes</span>
+                        </button>
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
